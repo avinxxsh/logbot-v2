@@ -10,6 +10,7 @@ Privileged intents needed in the Developer Portal:
 """
 
 import os
+import json
 import random
 import datetime
 from pathlib import Path
@@ -38,6 +39,37 @@ def log_path(guild_id: int) -> Path:
     return LOG_DIR / f"{guild_id}.txt"
 
 
+# ---------------- Per-server logging config ----------------
+# config.json stores, per guild:
+#   {"mode": "all"}                              → log every channel
+#   {"mode": "selected", "channels": [id, ...]}  → log only these channels
+# Guilds with no entry default to "all" (matches original behaviour).
+
+CONFIG_FILE = Path("config.json")
+
+
+def load_config() -> dict:
+    if CONFIG_FILE.exists():
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+def save_config() -> None:
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2)
+
+
+config = load_config()
+
+
+def should_log(guild_id: int, channel_id: int) -> bool:
+    cfg = config.get(str(guild_id))
+    if not cfg or cfg.get("mode") == "all":
+        return True
+    return channel_id in cfg.get("channels", [])
+
+
 # ---------------- Events ----------------
 
 @bot.event
@@ -53,14 +85,19 @@ async def on_message(message: discord.Message):
     if message.guild is None or message.author == bot.user:
         return
 
-    ts = datetime.datetime.now(IST).strftime("%d/%m/%Y %H:%M:%S IST")
-    line = f"\n{ts}: message from {message.author}: {message.content} (in channel: {message.channel.name})"
-    with open(log_path(message.guild.id), "a", encoding="utf-8") as f:
-        f.write(line)
+    # Only log if this channel is enabled for this server
+    if should_log(message.guild.id, message.channel.id):
+        ts = datetime.datetime.now(IST).strftime("%d/%m/%Y %H:%M:%S IST")
+        line = f"\n{ts}: message from {message.author}: {message.content} (in channel: {message.channel.name})"
+        with open(log_path(message.guild.id), "a", encoding="utf-8") as f:
+            f.write(line)
 
-    # Reply to mentions
+    # Reply to mentions (guarded: some channels deny Send Messages → 403)
     if bot.user.mentioned_in(message) and not message.mention_everyone:
-        await message.channel.send("```yaml\ntype \"/help\" for more information```")
+        try:
+            await message.channel.send("```yaml\ntype \"/help\" for more information```")
+        except discord.Forbidden:
+            pass  # no permission to post here — skip silently
 
     await bot.process_commands(message)
 
@@ -87,6 +124,11 @@ async def help_cmd(interaction: discord.Interaction):
         "- /members: Export all members + IDs as a text file (Manage Server required)\n"
         "- /serverid: Get this server's ID\n"
         "- /update: Info on the latest LogBot update\n\n"
+        "Logging setup (Manage Server required):\n"
+        "- /logall: Log every channel (default)\n"
+        "- /loghere: Log only the current channel\n"
+        "- /logselect: Pick specific channels via a dropdown\n"
+        "- /logstatus: See which channels are being logged\n\n"
         "Misc:\n"
         "- /rp: Make LogBot repeat what you say\n"
         "- /crystalball: Ask a yes/no question\n"
@@ -168,6 +210,82 @@ async def members(interaction: discord.Interaction):
             f.write(f"{username:<25} {nickname:<25} {member.id}\n")
     await interaction.followup.send(file=discord.File(out))
     out.unlink(missing_ok=True)
+
+
+# ---------------- Logging config commands ----------------
+
+@bot.tree.command(name="logall", description="Log messages in every channel (default)")
+@app_commands.guild_only()
+@app_commands.checks.has_permissions(manage_guild=True)
+async def logall(interaction: discord.Interaction):
+    config[str(interaction.guild_id)] = {"mode": "all"}
+    save_config()
+    await interaction.response.send_message(
+        "✅ Now logging **all channels**.", ephemeral=True
+    )
+
+
+@bot.tree.command(name="loghere", description="Log only the current channel")
+@app_commands.guild_only()
+@app_commands.checks.has_permissions(manage_guild=True)
+async def loghere(interaction: discord.Interaction):
+    config[str(interaction.guild_id)] = {
+        "mode": "selected",
+        "channels": [interaction.channel_id],
+    }
+    save_config()
+    await interaction.response.send_message(
+        f"✅ Now logging **only** {interaction.channel.mention}. "
+        "Use `/logselect` to log several channels, or `/logall` for everything.",
+        ephemeral=True,
+    )
+
+
+class ChannelPickView(discord.ui.View):
+    def __init__(self, guild_id: int):
+        super().__init__(timeout=120)
+        self.guild_id = guild_id
+
+    @discord.ui.select(
+        cls=discord.ui.ChannelSelect,
+        channel_types=[discord.ChannelType.text],
+        min_values=1,
+        max_values=25,  # Discord's cap for select menus
+        placeholder="Select channels to log…",
+    )
+    async def pick(self, interaction: discord.Interaction, select: discord.ui.ChannelSelect):
+        ids = [c.id for c in select.values]
+        config[str(self.guild_id)] = {"mode": "selected", "channels": ids}
+        save_config()
+        mentions = ", ".join(f"<#{i}>" for i in ids)
+        await interaction.response.edit_message(
+            content=f"✅ Now logging: {mentions}", view=None
+        )
+
+
+@bot.tree.command(name="logselect", description="Pick which channels to log")
+@app_commands.guild_only()
+@app_commands.checks.has_permissions(manage_guild=True)
+async def logselect(interaction: discord.Interaction):
+    await interaction.response.send_message(
+        "Choose the channels to log (this replaces the current selection):",
+        view=ChannelPickView(interaction.guild_id),
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="logstatus", description="Show which channels are being logged")
+@app_commands.guild_only()
+async def logstatus(interaction: discord.Interaction):
+    cfg = config.get(str(interaction.guild_id))
+    if not cfg or cfg.get("mode") == "all":
+        msg = "📋 Logging **all channels**."
+    elif cfg.get("channels"):
+        mentions = ", ".join(f"<#{i}>" for i in cfg["channels"])
+        msg = f"📋 Logging only: {mentions}"
+    else:
+        msg = "📋 Logging is set to selected mode, but no channels are chosen."
+    await interaction.response.send_message(msg, ephemeral=True)
 
 
 # ---------------- Misc commands ----------------

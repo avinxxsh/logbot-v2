@@ -1,0 +1,13 @@
+# Secrets — never commit your token
+.env
+
+# Virtual environment
+.venv/
+venv/
+
+# Runtime logs
+logs/*.txt
+
+# Python cruft
+__pycache__/
+*.pyc

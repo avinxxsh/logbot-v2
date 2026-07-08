@@ -1,0 +1,21 @@
+# systemd unit — for hosting on any Linux VPS (Oracle free tier, Hetzner, DO, etc.)
+# 1. Copy project to /opt/logbot and create /opt/logbot/.env with your token
+# 2. sudo cp logbot.service /etc/systemd/system/
+# 3. sudo systemctl daemon-reload && sudo systemctl enable --now logbot
+# Logs: journalctl -u logbot -f
+
+[Unit]
+Description=LogBot Discord bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/logbot
+ExecStart=/opt/logbot/venv/bin/python main.py
+Restart=always
+RestartSec=5
+User=logbot
+
+[Install]
+WantedBy=multi-user.target

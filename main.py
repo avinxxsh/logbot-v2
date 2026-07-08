@@ -151,7 +151,7 @@ async def clearlog(interaction: discord.Interaction):
     await interaction.response.send_message("```SUCCESS: Log Cleared```")
 
 
-@bot.tree.command(name="members", description="Export all members and their IDs")
+@bot.tree.command(name="members", description="Export all members: username, server nickname, and ID")
 @app_commands.guild_only()
 @app_commands.checks.has_permissions(manage_guild=True)
 async def members(interaction: discord.Interaction):
@@ -159,8 +159,13 @@ async def members(interaction: discord.Interaction):
     await interaction.response.defer()
     out = LOG_DIR / f"users_{interaction.guild_id}.txt"
     with open(out, "w", encoding="utf-8") as f:
+        # Header row + aligned columns for readability
+        f.write(f"{'Username':<25} {'Server Nickname':<25} {'User ID'}\n")
+        f.write(f"{'-' * 25} {'-' * 25} {'-' * 19}\n")
         async for member in interaction.guild.fetch_members(limit=None):
-            f.write(f"{member}, User ID: {member.id}\n")
+            username = member.name
+            nickname = member.nick if member.nick else "—"  # None if no server nick set
+            f.write(f"{username:<25} {nickname:<25} {member.id}\n")
     await interaction.followup.send(file=discord.File(out))
     out.unlink(missing_ok=True)
 
